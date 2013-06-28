@@ -2,13 +2,19 @@
 # -*- coding: utf-8 -*-
 
 import MySQLdb as db
+from pprint import pprint # Pretty-printing
 
-schema  = "TABLE_SCHEMA" # set the schema in which both tables reside
-table_1 = "TABLE1"       # change 
-table_2 = "TABLE2"       # change
+# Comparison configuration
+schema       = "TABLE_SCHEMA" # Change to the corresponding schema
+table_1      = "TABLE1"       # Change to define the first table
+table_2      = "TABLE2"       # Change to define the second table
+sqlTemplate  = "select * from %(schema)s.%(table)s"
+tableList    = [table_1, table_2]
+keyFieldName = "FIELD1"       # Change to define the display field for row differences
 
-sql1 = "select * from %(schema)s.%(table_1)s" % vars()
-sql2 = "select * from %(schema)s.%(table_2)s" % vars()
+# Ancillary function (to use instead of lambda x: x[0])
+def first(x):
+    return x[0]
 
 print "MySQL user: "
 username = raw_input()
@@ -17,68 +23,72 @@ print "MySQL password: "
 password = raw_input()
 
 conn = db.connect(
-    host="localhost", # change accordingly
+    host="localhost",
     user=username,
     passwd=password
 )
 
-cursor1 = conn.cursor()
-cursor2 = conn.cursor()
+tableParameterDict = {}
+for table in tableList:
+    parameterDict = {}
+    parameterDict['sql'] = sqlTemplate % {
+        'schema': schema,
+        'table': table
+    }
+    parameterDict['cursor'] = conn.cursor()
+    parameterDict['numRows'] = parameterDict['cursor'].execute(parameterDict['sql'])
+    parameterDict['description'] = parameterDict['cursor'].description
+    parameterDict['fields'] = map(first, parameterDict['description'])
+    parameterDict['data'] = parameterDict['cursor'].fetchall()
+    try:
+        parameterDict['keyColumn'] = parameterDict['fields'].index(keyFieldName)
+    except ValueError:
+        parameterDict['keyColumn'] = 0 # we try with the first
+    tableParameterDict[table] = parameterDict
 
-cursor1.execute(sql1)
-cursor2.execute(sql2)
+# Start analysing
+if tableParameterDict[table_1]['fields'] != tableParameterDict[table_2]['fields']:
+    print("Different fields")
+    for table in tableList:
+        print("Fields in table %s:" % table)
+        pprint(tableParameterDict[table]['fields'])
 
-fieldDesc1 = cursor1.description
-fieldDesc2 = cursor2.description
-
-fieldNames1 = map(lambda x: x[0], fieldDesc1)
-fieldNames2 = map(lambda x: x[0], fieldDesc2)
-
-if fieldNames1 != fieldNames2:
-    print("Campos distintos")
-
-data1 = cursor1.fetchall()
-data2 = cursor2.fetchall()
-
-keyFieldName = "cig"
-keyFieldPos = fieldNames1.index(keyFieldName)
-if keyFieldPos == -1:
-    keyFieldPos = 0
-
-
-def num_compare(num1, num2):
-    result = 0
-    if num1 > num2:
-        result = +1
-    if num1 < num2:
-        result = -1
-    return result
-
-for row in data1:
-    keyFieldValue = row[keyFieldPos]
-    row1 = filter(lambda x: x[0] == keyFieldValue, data1)
-    row2 = filter(lambda x: x[0] == keyFieldValue, data2)
+for row in tableParameterDict[table_1]['data']:
+    keyFieldValue = row[tableParameterDict[table_1]['keyColumn']]
+    # We process the rows for each different key column value
+    keyCol1, keyCol2 = (
+                            tableParameterDict[table_1]['keyColumn'],
+                            tableParameterDict[table_2]['keyColumn']
+    )
+    row1 = filter(lambda x: x[keyCol1] == keyFieldValue, tableParameterDict[table_1]['data'])
+    row2 = filter(lambda x: x[keyCol2] == keyFieldValue, tableParameterDict[table_2]['data'])
     if len(row1) > 1:
-        print("La tabla %(table_1)s tiene más de una fila con clave %(keyFieldValue)s" % vars())
+        print("Table %(table_1)s has more than one row with key %(keyFieldValue)s" % vars())
     if len(row2) > 1:
-        print("La tabla %(table_2)s tiene más de una fila con clave %(keyFieldValue)s" % vars())
+        print("Table %(table_2)s has more than one row with key %(keyFieldValue)s" % vars())
     if len(row2) == 0:
-        print("La tabla %(table_2)s no contiene valores para la clave %(keyFieldValue)s" % vars())
+        print("Table %(table_2)s has no rows for key %(keyFieldValue)s" % vars())
         continue
-    # Ahora nos quedamos sólo con la primera para comparar
-    row1 = row1[0]
-    row2 = row2[0]
+    # Now we just get the first row for each result set (if there were more, we would have had a message from the prints above)
+    row1 = first(row1)
+    row2 = first(row2)
+    # We generate a list of True or False values
+    # True indicates that the field values for that column are equal,
+    # False indicates they are different
+    # Zip creates a list of (field1, field2) tuples for each field so that we can later compare
+    # using lambda x: x[0] == x[1]
     eqVector = map(
                     lambda x: x[0] == x[1],
                     zip(row1, row2)
     )
+    # equalRow is only True si _all_ elements of eqVector are True
     equalRow = reduce(lambda x,y: x and y, eqVector)
     if not equalRow:
         # Find different columns
         diffCols = []
         i = 0
         while True:
-            # Salimos sólo mediante pasar del último valor, y que se lance un ValueError
+            # This loop only breaks when the index is too high, and a ValueError exception is raised
             try:
                 diffCols.append(eqVector.index(False, i))
                 i = diffCols[-1] + 1 # Last index
@@ -87,7 +97,7 @@ for row in data1:
         print ("\nDifference found on row %(keyFieldValue)s" % vars())
         for col in diffCols:
             print "Field %30s:  value1: %10s     value2: %10s" % (
-                fieldNames1[col],
+                tableParameterDict[table_1]['fields'][col],
                 row1[col],
                 row2[col]
             )
